@@ -93,5 +93,5 @@ def MeshGenerate2D(mesh,Type):
     p[:,0]=x.reshape(-1)/(nNodex-1)
     p[:,1]=y.reshape(-1)/(nNodey-1)    
     
-    return p,edofMat
+    return p,edofMat.astype(int),mesh
     
