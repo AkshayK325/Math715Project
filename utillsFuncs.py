@@ -39,7 +39,6 @@ def MeshGenerate2D(mesh,Type):
                 n2=(nely+1)*(elx+1)+ely
                 
                 edofMat[el,:]=np.array([n1,n2,n1+1]);
-                
                 el = el + 1    
                 edofMat[el,:]=np.array([n2+1,n1+1,n2]);
                 el = el + 1  
@@ -81,7 +80,7 @@ def MeshGenerate2D(mesh,Type):
                 
                 el = el + 1    
                 
-                edofMat[el,:]=np.array([n2+2,n1+2,n3,n2+2,n2+1,n3+1]);
+                edofMat[el,:]=np.array([n3+2,n1+2,n3,n2+2,n2+1,n3+1]);
                 
                 el = el + 1  
 
