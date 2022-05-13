@@ -301,7 +301,8 @@ class FEA:
         if Plot_it:
             self.Plot_Solution(u,'Element ' + self.ElementType + ' FEA Solution for Elements ' ,1)
             self.Plot_Solution(uref,'Exact Solution',0)
-            # self.Plot_Mesh()
+            if self.mesh['nel']<64:
+                self.Plot_Mesh()
                
         normL2  = norm((uref[freeNodes]-u[freeNodes]),ord=2)
         normLinf = norm(abs((uref[freeNodes]-u[freeNodes])),ord=np.inf)
@@ -354,9 +355,6 @@ def TestFunction(example,Type):
     
     mesh = {'h':h,'L':L,'H':H}
     
-    # Type = ['P1','P2','Q1','Q2']
-    
-    # Type = ['Q1','Q2']
     
     num = len(Type)
     meshNum = 8
