@@ -81,6 +81,8 @@ def MeshGenerate2D(mesh,Type):
                 el = el + 1    
                 
                 edofMat[el,:]=np.array([n3+2,n1+2,n3,n2+2,n2+1,n3+1]);
+                # edofMat[el,:]=np.array([n3+2,n3,n1+2,n3+1,n2+1,n2+2]);
+
                 
                 el = el + 1  
 

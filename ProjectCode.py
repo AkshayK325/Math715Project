@@ -10,8 +10,8 @@ from numpy.linalg import qr,solve,cholesky,norm,cond
 # importing the ploting libray
 import matplotlib.pyplot as plt
 
-from scipy.sparse import csc_matrix, diags
-from scipy.sparse.linalg import spsolve,gmres,spsolve_triangular
+from scipy.sparse import csc_matrix, diags,coo_matrix
+from scipy.sparse.linalg import spsolve,gmres,spsolve_triangular,cg
 
 import sys
 from sys import exit
@@ -36,8 +36,14 @@ class FEA:
             mesh['nel'] = int(mesh['nel']*2)
             
         self.p,self.dofMat,self.mesh = MeshGenerate2D(mesh,ElementType) 
-          
-    def SolveFEA(self,example):
+              
+        
+        self.iK = tuple(np.kron(self.dofMat,np.ones((self.mesh['dofPerElem'],1))).flatten().astype(int))
+         
+        self.jK = tuple(np.kron(self.dofMat,np.ones((1,self.mesh['dofPerElem']))).flatten().astype(int))
+       
+     
+    def SolveFEA(self,example,Plot_it):
         
         def ElemStiffnessMatrix1(h,ElemDof):
             
@@ -69,14 +75,13 @@ class FEA:
                 
                 aK = np.array([[(13*h**2)/30 + 22/3,  (29*h**2)/180 + 7/3,  (29*h**2)/180 + 7/3,  - (3*h**2)/5 - 28/3,    (7*h**2)/9 + 20/3,  - (3*h**2)/5 - 28/3],\
                                [(29*h**2)/180 + 7/3,    (2*h**2)/15 + 7/3,              h**2/36, - (4*h**2)/15 - 14/3,           h**2/3 + 2,     - (2*h**2)/9 - 2],\
-                               [(29*h**2)/180 + 7/3,              h**2/36,    (2*h**2)/15 + 7/3,     - (2*h**2)/9 - 2,           h**2/3 + 2, - (4*h**2)/15 - 14/3],\
+                               [(29*h**2)/180 + 7/3,              (h**2)/36,    (2*h**2)/15 + 7/3,     - (2*h**2)/9 - 2,           h**2/3 + 2, - (4*h**2)/15 - 14/3],\
                                [- (3*h**2)/5 - 28/3, - (4*h**2)/15 - 14/3,     - (2*h**2)/9 - 2,    (44*h**2)/45 + 16, - (10*h**2)/9 - 32/3,    (8*h**2)/9 + 32/3],\
                                [  (7*h**2)/9 + 20/3,           h**2/3 + 2,           h**2/3 + 2, - (10*h**2)/9 - 32/3,   (16*h**2)/9 + 32/3, - (10*h**2)/9 - 32/3],\
                                [- (3*h**2)/5 - 28/3,     - (2*h**2)/9 - 2, - (4*h**2)/15 - 14/3,    (8*h**2)/9 + 32/3, - (10*h**2)/9 - 32/3,    (44*h**2)/45 + 16]])
                 
             return aK
-        
-        
+       
         def ElemStiffnessMatrix2(h,ElemDof):
             
             if ElemDof == 4:                     
@@ -111,33 +116,35 @@ class FEA:
                                [-28/3, -14/3,    -2,    16, -32/3,  32/3],\
                                [ 20/3,     2,     2, -32/3,  32/3, -32/3],\
                                [-28/3,    -2, -14/3,  32/3, -32/3,    16]])
+                    
                 
             return aK
 
-        def StiffnessMatrix(h,p,s):
+        def StiffnessMatrixAssembly(h,p,s):
             
             ndof =  np.size(p,0)
-            A = np.zeros((ndof,ndof))
+            # A = np.zeros((ndof,ndof))
+            
+            # A = csc_matrix((ndof,ndof),dtype=np.float64)
             
             ElemDof = self.mesh['dofPerElem']
-            
+          
+            nK = np.size(s,0)
+           
             if example == 1:
                 aK = ElemStiffnessMatrix1(h,ElemDof)
             else:
                 aK = ElemStiffnessMatrix2(h,ElemDof)
-
-            
-            nK = np.size(s,0)
-            for k in range(nK):       
-                for i1 in range(ElemDof):
-                    i = s[k,i1]
-                    for j1 in range(ElemDof):
-                        j = s[k,j1]
-                        A[i,j] = A[i,j] + aK[i1,j1]
-                     
+                
+            Ael = np.tile(aK,(nK,1,1))
+                                               
+            saK = ((Ael.flatten())).flatten(order='F')
+    
+            A = coo_matrix((saK,(self.iK,self.jK)),shape=(ndof,ndof)).tocsc()
+                        
             return A
 
-        def ForceFun1(x1,y1,h,ElemDof):
+        def ForceFun1(x1,y1,h,ElemDof,num):
             
             if ElemDof == 4:
                 F = (1/(2*pi**2))*np.array([[-(cos(pi*(h+x1))-cos(pi*(h+y1))-cos(pi*(x1))+cos(pi*(y1))+h*pi*sin(pi*(x1))-h*pi*sin(pi*(y1)))],\
@@ -147,10 +154,15 @@ class FEA:
             
             elif ElemDof == 3:
                 
-                F = np.array([-(cos(pi*(h + x1)) - cos(pi*(h + y1)) - cos(pi*x1) + cos(pi*y1) + (pi*h*sin(pi*(h + x1)))/2 - (pi*h*sin(pi*(h + y1)))/2 + (h*pi*sin(pi*x1))/2 - (h*pi*sin(pi*y1))/2)/pi**2,\
+                if num%2==0:
+                    F = np.array([-(cos(pi*(h + x1)) - cos(pi*(h + y1)) - cos(pi*x1) + cos(pi*y1) + (pi*h*sin(pi*(h + x1)))/2 - (pi*h*sin(pi*(h + y1)))/2 + (h*pi*sin(pi*x1))/2 - (h*pi*sin(pi*y1))/2)/pi**2,\
                                                              (cos(pi*(h + x1)) - cos(pi*x1))/pi**2 - (h*(sin(pi*(h + y1)) - sin(pi*y1)))/(2*pi) + (h*sin(pi*(h + x1)))/pi,\
                                                            cos(pi*y1)/pi**2 - (cos(pi*(h + y1)) + pi*h*sin(pi*(h + y1)))/pi**2 + (h*(sin(pi*(h + x1)) - sin(pi*x1)))/(2*pi)])
-            
+                else:
+                    
+                    F = np.array([(cos(pi*x1) - cos(pi*y1) - cos(pi*(h - x1)) + cos(pi*(h - y1)) + (h*pi*sin(pi*x1))/2 - (h*pi*sin(pi*y1))/2 - (pi*h*sin(pi*(h - x1)))/2 + (pi*h*sin(pi*(h - y1)))/2)/pi**2,\
+                                                             (h*sin(pi*(h - x1)))/pi - (h*(sin(pi*y1) + sin(pi*(h - y1))))/(2*pi) - (cos(pi*x1) - cos(pi*(h - x1)))/pi**2,\
+                                                          cos(pi*y1)/pi**2 - (cos(pi*(h - y1)) + pi*h*sin(pi*(h - y1)))/pi**2 + (h*(sin(pi*x1) + sin(pi*(h - x1))))/(2*pi)])
             elif ElemDof == 9:
                 
                 F = np.array([-(4*sin(pi*(h + x1)) - 4*sin(pi*(h + y1)) - 4*sin(pi*x1) + 4*sin(pi*y1) - pi*h*cos(pi*(h + x1)) + pi*h*cos(pi*(h + y1)) + h**2*pi**2*sin(pi*x1) - h**2*pi**2*sin(pi*y1) - 3*h*pi*cos(pi*x1) + 3*h*pi*cos(pi*y1))/(6*h*pi**3),\
@@ -165,30 +177,40 @@ class FEA:
                     
                 
             elif ElemDof == 6:
+                if num%2 == 0:
+                    F = np.array([-(4*sin(pi*(h + x1)) - 4*sin(pi*(h + y1)) - 4*sin(pi*x1) + 4*sin(pi*y1) - (7*h**2*pi**2*sin(pi*(h + x1)))/6 + (7*h**2*pi**2*sin(pi*(h + y1)))/6 - 3*pi*h*cos(pi*(h + x1)) + 3*pi*h*cos(pi*(h + y1)) + (h**2*pi**2*sin(pi*x1))/6 - (h**2*pi**2*sin(pi*y1))/6 - h*pi*cos(pi*x1) + h*pi*cos(pi*y1))/(h*pi**3),\
+                              (3*cos(pi*(h + x1)) + cos(pi*x1))/pi**2 - (4*sin(pi*(h + x1)) - 4*sin(pi*x1))/(h*pi**3) + (h*(6*sin(pi*(h + x1)) - sin(pi*(h + y1)) + sin(pi*y1)))/(6*pi),\
+                              -(4*sin(pi*y1) - 4*sin(pi*(h + y1)) - (h**2*pi**2*sin(pi*(h + x1)))/6 + h**2*pi**2*sin(pi*(h + y1)) + 3*pi*h*cos(pi*(h + y1)) + (h**2*pi**2*sin(pi*x1))/6 + h*pi*cos(pi*y1))/(h*pi**3),\
+                              -(2*(12*sin(pi*x1) - 12*sin(pi*(h + x1)) + 3*h**2*pi**2*sin(pi*(h + x1)) - 2*h**2*pi**2*sin(pi*(h + y1)) + 9*pi*h*cos(pi*(h + x1)) - 3*pi*h*cos(pi*(h + y1)) - h**2*pi**2*sin(pi*y1) + 3*h*pi*cos(pi*x1) + 3*h*pi*cos(pi*y1)))/(3*h*pi**3),\
+                              (2*(cos(pi*(h + x1)) - cos(pi*(h + y1)) - cos(pi*x1) + cos(pi*y1) + pi*h*sin(pi*(h + x1)) - pi*h*sin(pi*(h + y1))))/pi**2,\
+                              (6*cos(pi*(h + y1)) - 2*cos(pi*(h + x1)) + 2*cos(pi*x1) + 2*cos(pi*y1))/pi**2 - (8*sin(pi*(h + y1)) - 8*sin(pi*y1))/(h*pi**3) - (2*h*(2*sin(pi*(h + x1)) - 3*sin(pi*(h + y1)) + sin(pi*x1)))/(3*pi)])
+                else:
+                    F = np.array([-(4*sin(pi*x1) - 4*sin(pi*y1) + 4*sin(pi*(h - x1)) - 4*sin(pi*(h - y1)) - (h**2*pi**2*sin(pi*x1))/6 + (h**2*pi**2*sin(pi*y1))/6 - (7*h**2*pi**2*sin(pi*(h - x1)))/6 + (7*h**2*pi**2*sin(pi*(h - y1)))/6 - h*pi*cos(pi*x1) + h*pi*cos(pi*y1) - 3*pi*h*cos(pi*(h - x1)) + 3*pi*h*cos(pi*(h - y1)))/(h*pi**3),\
+                                  (cos(pi*x1) + 3*cos(pi*(h - x1)))/pi**2 - (4*sin(pi*x1) + 4*sin(pi*(h - x1)))/(h*pi**3) - (h*(sin(pi*y1) - 6*sin(pi*(h - x1)) + sin(pi*(h - y1))))/(6*pi),\
+                                  (4*sin(pi*y1) + 4*sin(pi*(h - y1)) + (h**2*pi**2*sin(pi*x1))/6 + (h**2*pi**2*sin(pi*(h - x1)))/6 - h**2*pi**2*sin(pi*(h - y1)) - h*pi*cos(pi*y1) - 3*pi*h*cos(pi*(h - y1)))/(h*pi**3),\
+                                  -(2*(h**2*pi**2*sin(pi*y1) - 12*sin(pi*(h - x1)) - 12*sin(pi*x1) + 3*h**2*pi**2*sin(pi*(h - x1)) - 2*h**2*pi**2*sin(pi*(h - y1)) + 3*h*pi*cos(pi*x1) + 3*h*pi*cos(pi*y1) + 9*pi*h*cos(pi*(h - x1)) - 3*pi*h*cos(pi*(h - y1))))/(3*h*pi**3),\
+                                  -(2*(cos(pi*x1) - cos(pi*y1) - cos(pi*(h - x1)) + cos(pi*(h - y1)) - pi*h*sin(pi*(h - x1)) + pi*h*sin(pi*(h - y1))))/pi**2,\
+                                  (2*cos(pi*x1) + 2*cos(pi*y1) - 2*cos(pi*(h - x1)) + 6*cos(pi*(h - y1)))/pi**2 - (8*sin(pi*y1) + 8*sin(pi*(h - y1)))/(h*pi**3) + (2*h*(sin(pi*x1) - 2*sin(pi*(h - x1)) + 3*sin(pi*(h - y1))))/(3*pi)])
                 
-                F = np.array([-(24*sin(pi*(h + x1)) - 24*sin(pi*(h + y1)) - 24*sin(pi*x1) + 24*sin(pi*y1) - 7*h**2*pi**2*sin(pi*(h + x1)) + 7*h**2*pi**2*sin(pi*(h + y1)) - 18*pi*h*cos(pi*(h + x1)) + 18*pi*h*cos(pi*(h + y1)) + h**2*pi**2*sin(pi*x1) - h**2*pi**2*sin(pi*y1) - 6*h*pi*cos(pi*x1) + 6*h*pi*cos(pi*y1))/(6*h*pi**3),\
-                                                                                                                                      (3*cos(pi*(h + x1)) + cos(pi*x1))/pi**2 - (4*sin(pi*(h + x1)) - 4*sin(pi*x1))/(h*pi**3) + (h*(6*sin(pi*(h + x1)) - sin(pi*(h + y1)) + sin(pi*y1)))/(6*pi),\
-                                                                                                                                      (4*sin(pi*(h + y1)) - 4*sin(pi*y1))/(h*pi**3) - (3*cos(pi*(h + y1)) + cos(pi*y1))/pi**2 - (h*(6*sin(pi*(h + y1)) - sin(pi*(h + x1)) + sin(pi*x1)))/(6*pi),\
-                                                           -(24*sin(pi*x1) - 24*sin(pi*(h + x1)) + 6*h**2*pi**2*sin(pi*(h + x1)) - 4*h**2*pi**2*sin(pi*(h + y1)) + 18*pi*h*cos(pi*(h + x1)) - 6*pi*h*cos(pi*(h + y1)) - 2*h**2*pi**2*sin(pi*y1) + 6*h*pi*cos(pi*x1) + 6*h*pi*cos(pi*y1))/(3*h*pi**3),\
-                                                                                                                                                             (2*cos(pi*(h + x1)) - 2*cos(pi*(h + y1)) - 2*cos(pi*x1) + 2*cos(pi*y1) + 2*pi*h*sin(pi*(h + x1)) - 2*pi*h*sin(pi*(h + y1)))/pi**2,\
-                                                            (24*sin(pi*y1) - 24*sin(pi*(h + y1)) - 4*h**2*pi**2*sin(pi*(h + x1)) + 6*h**2*pi**2*sin(pi*(h + y1)) - 6*pi*h*cos(pi*(h + x1)) + 18*pi*h*cos(pi*(h + y1)) - 2*h**2*pi**2*sin(pi*x1) + 6*h*pi*cos(pi*x1) + 6*h*pi*cos(pi*y1))/(3*h*pi**3)])
-                
-            return F 
+            return F
         
-        def ForceFun2(x1,y1,h,ElemDof):
+        def ForceFun2(x1,y1,h,ElemDof,num):
             
             if ElemDof == 4:
-
                 F = np.array([((sin(pi*x1) - sin(pi*(h + x1)) + h*pi*cos(pi*x1))*(sin(pi*y1) - sin(pi*(h + y1)) + h*pi*cos(pi*y1)))/(h**2*pi**4),\
                               -((sin(pi*x1) - sin(pi*(h + x1)) + pi*h*cos(pi*(h + x1)))*(sin(pi*y1) - sin(pi*(h + y1)) + h*pi*cos(pi*y1)))/(h**2*pi**4),\
                               ((sin(pi*x1) - sin(pi*(h + x1)) + pi*h*cos(pi*(h + x1)))*(sin(pi*y1) - sin(pi*(h + y1)) + pi*h*cos(pi*(h + y1))))/(h**2*pi**4),\
                               -((sin(pi*y1) - sin(pi*(h + y1)) + pi*h*cos(pi*(h + y1)))*(sin(pi*x1) - sin(pi*(h + x1)) + h*pi*cos(pi*x1)))/(h**2*pi**4)])
             
-            elif ElemDof == 3:                
-                F = np.array([(sin(pi*(2*h + x1 + y1)) + sin(pi*(x1 + y1)) - 2*sin(pi*(h + x1 + y1)) - (h*pi*cos(pi*(2*h + x1 + y1)))/2 + (pi*h*cos(pi*(x1 + y1)))/2)/(h*pi**3),\
-                                              ((cos(pi*(h + y1)) - cos(pi*y1))*(sin(pi*x1) - sin(pi*(h + x1)) + pi*h*cos(pi*(h + x1))))/(h*pi**3),\
-                                              ((cos(pi*(h + x1)) - cos(pi*x1))*(sin(pi*y1) - sin(pi*(h + y1)) + pi*h*cos(pi*(h + y1))))/(h*pi**3)])
-            
+            elif ElemDof == 3:  
+                if num%2==0:
+                    F = np.array([(sin(pi*(2*h + x1 + y1)) + sin(pi*(x1 + y1)) - 2*sin(pi*(h + x1 + y1)) - (h*pi*cos(pi*(2*h + x1 + y1)))/2 + (pi*h*cos(pi*(x1 + y1)))/2)/(h*pi**3),\
+                                                  ((cos(pi*(h + y1)) - cos(pi*y1))*(sin(pi*x1) - sin(pi*(h + x1)) + pi*h*cos(pi*(h + x1))))/(h*pi**3),\
+                                                  ((cos(pi*(h + x1)) - cos(pi*x1))*(sin(pi*y1) - sin(pi*(h + y1)) + pi*h*cos(pi*(h + y1))))/(h*pi**3)])
+                else:
+                    F = np.array([-(sin(pi*(x1 - 2*h + y1)) - 2*sin(pi*(x1 - h + y1)) + sin(pi*(x1 + y1)) + (h*pi*cos(pi*(x1 - 2*h + y1)))/2 - (pi*h*cos(pi*(x1 + y1)))/2)/(h*pi**3),\
+                                  ((cos(pi*y1) - cos(pi*(h - y1)))*(sin(pi*x1) + sin(pi*(h - x1)) - pi*h*cos(pi*(h - x1))))/(h*pi**3),\
+                                  ((cos(pi*x1) - cos(pi*(h - x1)))*(sin(pi*y1) + sin(pi*(h - y1)) - pi*h*cos(pi*(h - y1))))/(h*pi**3)])
             elif ElemDof == 9:                
                 F = np.array([ (16*cos(pi*(2*h + x1 + y1)) - 16*cos(pi*(h - x1 + y1)) - 16*cos(pi*(h + x1 - y1)) + 16*cos(pi*(x1 + y1)) + 32*cos(pi*(x1 - y1)) - 32*cos(pi*(h + x1 + y1)) + 7*h**2*pi**2*cos(pi*(h + x1 - y1)) + 7*h**2*pi**2*cos(pi*(h - x1 + y1)) - h**2*pi**2*cos(pi*(2*h + x1 + y1)) + h**3*pi**3*sin(pi*(h + x1 - y1)) + h**3*pi**3*sin(pi*(h - x1 + y1)) - 17*h**2*pi**2*cos(pi*(x1 + y1)) + h**4*pi**4*cos(pi*(x1 + y1)) + 6*h**3*pi**3*sin(pi*(x1 + y1)) - 16*pi*h*sin(pi*(h + x1 - y1)) - 16*pi*h*sin(pi*(h - x1 + y1)) + 8*h*pi*sin(pi*(2*h + x1 + y1)) - 24*pi*h*sin(pi*(x1 + y1)) + 2*h**2*pi**2*cos(pi*(x1 - y1)) + h**4*pi**4*cos(pi*(x1 - y1)) + 2*h**2*pi**2*cos(pi*(h + x1 + y1)) + 2*h**3*pi**3*sin(pi*(h + x1 + y1)) + 16*pi*h*sin(pi*(h + x1 + y1)))/(2*h**4*pi**6),\
                               -(16*cos(pi*(h + x1 - y1)) + 16*cos(pi*(h - x1 + y1)) - 16*cos(pi*(2*h + x1 + y1)) - 16*cos(pi*(x1 + y1)) - 32*cos(pi*(x1 - y1)) + 32*cos(pi*(h + x1 + y1)) - 17*h**2*pi**2*cos(pi*(h + x1 - y1)) - h**2*pi**2*cos(pi*(h - x1 + y1)) + 7*h**2*pi**2*cos(pi*(2*h + x1 + y1)) + h**4*pi**4*cos(pi*(h + x1 - y1)) - 6*h**3*pi**3*sin(pi*(h + x1 - y1)) + h**3*pi**3*sin(pi*(2*h + x1 + y1)) + 7*h**2*pi**2*cos(pi*(x1 + y1)) - h**3*pi**3*sin(pi*(x1 + y1)) + 24*pi*h*sin(pi*(h + x1 - y1)) + 8*pi*h*sin(pi*(h - x1 + y1)) - 16*h*pi*sin(pi*(2*h + x1 + y1)) + 16*pi*h*sin(pi*(x1 + y1)) + 2*h**2*pi**2*cos(pi*(x1 - y1)) + 2*h**2*pi**2*cos(pi*(h + x1 + y1)) + h**4*pi**4*cos(pi*(h + x1 + y1)) - 2*h**3*pi**3*sin(pi*(x1 - y1)) - 16*pi*h*sin(pi*(x1 - y1)))/(2*h**4*pi**6),\
@@ -201,21 +223,29 @@ class FEA:
                                 -(32*cos(pi*(h + x1 - y1)) + 32*cos(pi*(h - x1 + y1)) - 32*cos(pi*(2*h + x1 + y1)) - 32*cos(pi*(x1 + y1)) - 64*cos(pi*(x1 - y1)) + 64*cos(pi*(h + x1 + y1)) - 8*h**2*pi**2*cos(pi*(h + x1 - y1)) - 8*h**2*pi**2*cos(pi*(h - x1 + y1)) + 8*h**2*pi**2*cos(pi*(2*h + x1 + y1)) + 8*h**2*pi**2*cos(pi*(x1 + y1)) + 32*pi*h*sin(pi*(h + x1 - y1)) + 32*pi*h*sin(pi*(h - x1 + y1)) - 32*h*pi*sin(pi*(2*h + x1 + y1)) + 32*pi*h*sin(pi*(x1 + y1)) - 16*h**2*pi**2*cos(pi*(x1 - y1)) + 16*h**2*pi**2*cos(pi*(h + x1 + y1)))/(h**4*pi**6)])
                 
             elif ElemDof == 6:
-                F = np.array([ (2*cos(pi*(h + x1 - y1)) + 2*cos(pi*(h - x1 + y1)) - 6*cos(pi*(2*h + x1 + y1)) - 6*cos(pi*(x1 + y1)) - 4*cos(pi*(x1 - y1)) + 12*cos(pi*(h + x1 + y1)) + (3*h**2*pi**2*cos(pi*(2*h + x1 + y1)))/2 + (h**2*pi**2*cos(pi*(x1 + y1)))/2 - 5*h*pi*sin(pi*(2*h + x1 + y1)) + 3*pi*h*sin(pi*(x1 + y1)) + 2*h**2*pi**2*cos(pi*(x1 - y1)) + 2*pi*h*sin(pi*(h + x1 + y1)))/(h**2*pi**4),\
-                              -((cos(pi*(h + y1)) - cos(pi*y1))*(4*cos(pi*(h + x1)) - 4*cos(pi*x1) - h**2*pi**2*cos(pi*(h + x1)) + 3*pi*h*sin(pi*(h + x1)) + h*pi*sin(pi*x1)))/(h**2*pi**4),\
-                              -((cos(pi*(h + x1)) - cos(pi*x1))*(4*cos(pi*(h + y1)) - 4*cos(pi*y1) - h**2*pi**2*cos(pi*(h + y1)) + 3*pi*h*sin(pi*(h + y1)) + h*pi*sin(pi*y1)))/(h**2*pi**4),\
-                              (4*sin(pi*x1)*(cos(pi*(h + y1)) - cos(pi*y1)))/(h*pi**3) - (8*cos(pi*x1)*(cos(pi*(h + y1)) - cos(pi*y1)))/(h**2*pi**4) - (4*cos(pi*(h + x1))*(sin(pi*y1) - sin(pi*(h + y1)) + pi*h*cos(pi*(h + y1))))/(h*pi**3) + (4*sin(pi*(h + x1))*(sin(pi*y1) - sin(pi*(h + y1)) + pi*h*cos(pi*(h + y1))))/(h**2*pi**4) - (4*sin(pi*x1)*(sin(pi*y1) - sin(pi*(h + y1)) + pi*h*cos(pi*(h + y1))))/(h**2*pi**4) + (8*cos(pi*(h + x1))*(cos(pi*(h + y1)) - cos(pi*y1)))/(h**2*pi**4) + (4*sin(pi*(h + x1))*(cos(pi*(h + y1)) - cos(pi*y1)))/(h*pi**3),\
-                              (4*(sin(pi*x1) - sin(pi*(h + x1)) + pi*h*cos(pi*(h + x1)))*(sin(pi*y1) - sin(pi*(h + y1)) + pi*h*cos(pi*(h + y1))))/(h**2*pi**4),\
-                              (4*sin(pi*(h + x1))*(sin(pi*y1) - sin(pi*(h + y1)) + pi*h*cos(pi*(h + y1))))/(h**2*pi**4) - (4*cos(pi*x1)*(2*cos(pi*(h + y1)) - 2*cos(pi*y1) - h**2*pi**2*cos(pi*(h + y1)) + 2*pi*h*sin(pi*(h + y1))))/(h**2*pi**4) - (4*cos(pi*x1)*(sin(pi*y1) - sin(pi*(h + y1)) + pi*h*cos(pi*(h + y1))))/(h*pi**3) - (4*sin(pi*x1)*(sin(pi*y1) - sin(pi*(h + y1)) + pi*h*cos(pi*(h + y1))))/(h**2*pi**4) + (4*cos(pi*(h + x1))*(2*cos(pi*(h + y1)) - 2*cos(pi*y1) - h**2*pi**2*cos(pi*(h + y1)) + 2*pi*h*sin(pi*(h + y1))))/(h**2*pi**4)])
                 
+                if num%2 == 0:
+                    F = np.array([(2*cos(pi*(h + x1 - y1)) + 2*cos(pi*(h - x1 + y1)) - 6*cos(pi*(2*h + x1 + y1)) - 6*cos(pi*(x1 + y1)) - 4*cos(pi*(x1 - y1)) + 12*cos(pi*(h + x1 + y1)) + (3*h**2*pi**2*cos(pi*(2*h + x1 + y1)))/2 + (h**2*pi**2*cos(pi*(x1 + y1)))/2 - 5*h*pi*sin(pi*(2*h + x1 + y1)) + 3*pi*h*sin(pi*(x1 + y1)) + 2*h**2*pi**2*cos(pi*(x1 - y1)) + 2*pi*h*sin(pi*(h + x1 + y1)))/(h**2*pi**4),\
+                                  -((cos(pi*(h + y1)) - cos(pi*y1))*(4*cos(pi*(h + x1)) - 4*cos(pi*x1) - h**2*pi**2*cos(pi*(h + x1)) + 3*pi*h*sin(pi*(h + x1)) + h*pi*sin(pi*x1)))/(h**2*pi**4),\
+                                  -((cos(pi*(h + x1)) - cos(pi*x1))*(4*cos(pi*(h + y1)) - 4*cos(pi*y1) - h**2*pi**2*cos(pi*(h + y1)) + 3*pi*h*sin(pi*(h + y1)) + h*pi*sin(pi*y1)))/(h**2*pi**4),\
+                                  (4*sin(pi*x1)*(cos(pi*(h + y1)) - cos(pi*y1)))/(h*pi**3) - (8*cos(pi*x1)*(cos(pi*(h + y1)) - cos(pi*y1)))/(h**2*pi**4) - (4*cos(pi*(h + x1))*(sin(pi*y1) - sin(pi*(h + y1)) + pi*h*cos(pi*(h + y1))))/(h*pi**3) + (4*sin(pi*(h + x1))*(sin(pi*y1) - sin(pi*(h + y1)) + pi*h*cos(pi*(h + y1))))/(h**2*pi**4) - (4*sin(pi*x1)*(sin(pi*y1) - sin(pi*(h + y1)) + pi*h*cos(pi*(h + y1))))/(h**2*pi**4) + (8*cos(pi*(h + x1))*(cos(pi*(h + y1)) - cos(pi*y1)))/(h**2*pi**4) + (4*sin(pi*(h + x1))*(cos(pi*(h + y1)) - cos(pi*y1)))/(h*pi**3),\
+                                    (4*(sin(pi*x1) - sin(pi*(h + x1)) + pi*h*cos(pi*(h + x1)))*(sin(pi*y1) - sin(pi*(h + y1)) + pi*h*cos(pi*(h + y1))))/(h**2*pi**4),\
+                                    (4*sin(pi*(h + x1))*(sin(pi*y1) - sin(pi*(h + y1)) + pi*h*cos(pi*(h + y1))))/(h**2*pi**4) - (4*cos(pi*x1)*(2*cos(pi*(h + y1)) - 2*cos(pi*y1) - h**2*pi**2*cos(pi*(h + y1)) + 2*pi*h*sin(pi*(h + y1))))/(h**2*pi**4) - (4*cos(pi*x1)*(sin(pi*y1) - sin(pi*(h + y1)) + pi*h*cos(pi*(h + y1))))/(h*pi**3) - (4*sin(pi*x1)*(sin(pi*y1) - sin(pi*(h + y1)) + pi*h*cos(pi*(h + y1))))/(h**2*pi**4) + (4*cos(pi*(h + x1))*(2*cos(pi*(h + y1)) - 2*cos(pi*y1) - h**2*pi**2*cos(pi*(h + y1)) + 2*pi*h*sin(pi*(h + y1))))/(h**2*pi**4)])
+                else:
+                    
+                    F = np.array([(2*cos(pi*(h + x1 - y1)) + 2*cos(pi*(h - x1 + y1)) + 12*cos(pi*(x1 - h + y1)) - 6*cos(pi*(x1 - 2*h + y1)) - 6*cos(pi*(x1 + y1)) - 4*cos(pi*(x1 - y1)) + (3*h**2*pi**2*cos(pi*(x1 - 2*h + y1)))/2 + (h**2*pi**2*cos(pi*(x1 + y1)))/2 - 2*h*pi*sin(pi*(x1 - h + y1)) + 5*h*pi*sin(pi*(x1 - 2*h + y1)) - 3*pi*h*sin(pi*(x1 + y1)) + 2*h**2*pi**2*cos(pi*(x1 - y1)))/(h**2*pi**4),\
+                                  -((cos(pi*y1) - cos(pi*(h - y1)))*(4*cos(pi*x1) - 4*cos(pi*(h - x1)) + h**2*pi**2*cos(pi*(h - x1)) + h*pi*sin(pi*x1) - 3*pi*h*sin(pi*(h - x1))))/(h**2*pi**4),\
+                                  -((cos(pi*x1) - cos(pi*(h - x1)))*(4*cos(pi*y1) - 4*cos(pi*(h - y1)) + h**2*pi**2*cos(pi*(h - y1)) + h*pi*sin(pi*y1) - 3*pi*h*sin(pi*(h - y1))))/(h**2*pi**4),\
+                                    (4*cos(pi*(h - x1))*(sin(pi*y1) + sin(pi*(h - y1)) - pi*h*cos(pi*(h - y1))))/(h*pi**3) - (4*sin(pi*(h - x1))*(sin(pi*y1) + sin(pi*(h - y1)) - pi*h*cos(pi*(h - y1))))/(h**2*pi**4) + (8*cos(pi*x1)*(cos(pi*y1) - cos(pi*(h - y1))))/(h**2*pi**4) + (4*sin(pi*x1)*(cos(pi*y1) - cos(pi*(h - y1))))/(h*pi**3) - (8*cos(pi*(h - x1))*(cos(pi*y1) - cos(pi*(h - y1))))/(h**2*pi**4) - (4*sin(pi*(h - x1))*(cos(pi*y1) - cos(pi*(h - y1))))/(h*pi**3) - (4*sin(pi*x1)*(sin(pi*y1) + sin(pi*(h - y1)) - pi*h*cos(pi*(h - y1))))/(h**2*pi**4),\
+                                    (4*(sin(pi*x1) + sin(pi*(h - x1)) - pi*h*cos(pi*(h - x1)))*(sin(pi*y1) + sin(pi*(h - y1)) - pi*h*cos(pi*(h - y1))))/(h**2*pi**4),\
+                                    (4*cos(pi*x1)*(2*cos(pi*y1) - 2*cos(pi*(h - y1)) + h**2*pi**2*cos(pi*(h - y1)) - 2*pi*h*sin(pi*(h - y1))))/(h**2*pi**4) - (4*sin(pi*(h - x1))*(sin(pi*y1) + sin(pi*(h - y1)) - pi*h*cos(pi*(h - y1))))/(h**2*pi**4) - (4*cos(pi*(h - x1))*(2*cos(pi*y1) - 2*cos(pi*(h - y1)) + h**2*pi**2*cos(pi*(h - y1)) - 2*pi*h*sin(pi*(h - y1))))/(h**2*pi**4) + (4*cos(pi*x1)*(sin(pi*y1) + sin(pi*(h - y1)) - pi*h*cos(pi*(h - y1))))/(h*pi**3) - (4*sin(pi*x1)*(sin(pi*y1) + sin(pi*(h - y1)) - pi*h*cos(pi*(h - y1))))/(h**2*pi**4)])
+            
             return F
 
         def BoundaryCondition(h,p,s):
                        
             ndof =  np.size(p,0)
-            dofs = np.arange(0,ndof)
-
-            
+            dofs = np.arange(0,ndof)            
             if example == 1:
                 fixedNodes=[]
             else:
@@ -238,119 +268,162 @@ class FEA:
                 fixedNodes = np.concatenate((fixedNodeRight,fixedNodeLeft,\
                                              fixedNodeBottom,fixedNodeTop)).T.reshape(-1);
             
-            
-            
             freeNodes = np.setdiff1d(dofs,fixedNodes) 
-                        
             u = np.zeros(ndof)
             b = np.zeros((ndof,1))
-
             
             nK = np.size(s,0)
             ElemDof = self.mesh['dofPerElem']
-            for k in range(nK):
-                
+            # print('F',ElemDof)
+            for k in range(nK):                
                 x1 = p[s[k,0],0]
-                y1 = p[s[k,0],1]
-                        
+                y1 = p[s[k,0],1]                        
                 if example == 1:
-                    F = ForceFun1(x1,y1,h,ElemDof)
+                    F = ForceFun1(x1,y1,h,ElemDof,k)
                 else:
-                    F = ForceFun2(x1,y1,h,ElemDof)
-
+                    F = ForceFun2(x1,y1,h,ElemDof,k)
                 for i1 in range(ElemDof):
-                    i = s[k,i1]
-                    
-                    b[i,0] = b[i,0] + F[i1]
-        
+                    i = s[k,i1]                    
+                    b[i,0] = b[i,0] + F[i1]  
+            
             return u, b, freeNodes
             
-        A = StiffnessMatrix(self.mesh['h'],self.p,self.dofMat) # stiffness matrix
-                
+        A = StiffnessMatrixAssembly(self.mesh['h'],self.p,self.dofMat) # stiffness matrix
+                       
         u,b,freeNodes = BoundaryCondition(self.mesh['h'],self.p,self.dofMat) # boundary condtions
-
-        u[freeNodes] = solve(A[freeNodes,:][:,freeNodes],b[freeNodes,0])
-
-        # self.Plot_Solution(u,'Element ' + self.ElementType + ' FEA Solution for Elements ' )
-                
+                        
+        u[freeNodes] = spsolve(A[freeNodes,:][:,freeNodes],b[freeNodes,0])
+         
         if example == 1:
             uref = (cos(pi*self.p[:,0])- cos(pi*self.p[:,1]))/(1+pi**2)
         else:            
             uref = sin(self.p[:,0]*pi)*sin(self.p[:,1]*pi)/(2*pi**2)
-                        
-        # self.Plot_Solution(uref,'Exact Solution for Elements ')
-
-        normL2  = norm(uref-u,ord=2)
-        normLinf = norm(uref-u,ord=np.inf)
-
+                  
+        if Plot_it:
+            self.Plot_Solution(u,'Element ' + self.ElementType + ' FEA Solution for Elements ' )
+            self.Plot_Solution(b,'Exact Solution for Elements ')
+               
+        normL2  = norm((uref[freeNodes]-u[freeNodes]),ord=2)
+        normLinf = norm(abs((uref[freeNodes]-u[freeNodes])),ord=np.inf)
+                
         return u,normL2,normLinf
         
     def Plot_Solution(self,u,TitleStr):
-        
         Ny = int(np.sqrt(np.size(self.p,0)))
-        
         fig = plt.figure()
         ax = fig.add_subplot(111,projection='3d')
         ax.plot_surface(self.p[:,0].reshape((-1,Ny)),self.p[:,1].reshape((-1,Ny)),u.reshape((-1,Ny)),cmap=plt.cm.viridis)
-    
-        plt.xlabel("x axis")
-        plt.ylabel("y axis",rotation = "vertical",labelpad = 20)
+        plt.xlabel("x ax1s")
+        plt.ylabel("y ax1s",rotation = "vertical",labelpad = 20)
         plt.title(TitleStr + str(np.size(self.dofMat,0)))
-    
         plt.ylim((np.min(self.p[:]),np.max(self.p[:])))
-        plt.xlim((np.min(self.p[:]),np.max(self.p[:])))
-    
+        plt.xlim((np.min(self.p[:]),np.max(self.p[:])))    
         plt.show()
+        
     
 
+def TestFunction(example,Type):
+    h = 1/2**1
+    
+    L = 1 
+    H = 1
+    
+    mesh = {'h':h,'L':L,'H':H}
+    
+    # Type = ['P1','P2','Q1','Q2']
+    
+    # Type = ['Q1','Q2']
+    
+    num = len(Type)
+    meshNum = 8
+    
+    H = 1/2**np.arange(1,meshNum)
+    L2norm = np.zeros((num,np.size(H)))
+    Linfnorm = np.zeros((num,np.size(H)))
+    for i in range(num):
+        ElementType = Type[i]
+        print(i)
+        for j in range(np.size(H)):
+            mesh['h'] = H[j]
+            F = FEA(mesh,ElementType)
+            u,normL2,normLinf= F.SolveFEA(example,Plot_it=False)
+            L2norm[i,j]   = normL2
+            Linfnorm[i,j] = normLinf
+        
+        plt.figure(1)
+        plt.loglog(H,L2norm[i,:],'-*')
+        plt.figure(2)
+        plt.loglog(H,Linfnorm[i,:],'-o')
+    #%%
+    LG1 = Type.copy()
+    LG1.append('slope = 1')
+    LG1.append('slope = 2')
+    
+    LG2 = Type.copy()
+    LG2.append('slope = 2')
+    LG2.append('slope = 3')
 
-h = 1/2**2
-example = 2
-ElementType = 'Q1'
-
-L = 1 
-H = 1
-
-mesh = {'h':h,'L':L,'H':H}
-
-Type = ['P1','P2','Q1','Q2']
-
-num = len(Type)
-meshNum = 7
-
-L2norm = np.zeros((num,meshNum-1))
-Linfnorm = np.zeros((num,meshNum-1))
-H = 1/2**np.arange(1,meshNum)
-for i in range(num):
-    ElementType = Type[i]
-    for j in range(meshNum-1):
-        mesh['h'] = H[j]
-        F = FEA(mesh,ElementType)
-        u,normL2,normLinf = F.SolveFEA(example)
-        L2norm[i,j]   = normL2
-        Linfnorm[i,j] = normLinf
     
     plt.figure(1)
-    plt.loglog(H,L2norm[i,:],'-*')
+    plt.xlabel('Log(Element size=h)',fontsize=16)
+    plt.ylabel('Log($L_{2}$ norm of Error)', fontsize=16)
+    plt.title('$L_{2}$ Norm Error vs Element size', fontsize=18)
+    plt.xticks(fontsize=14)
+    plt.yticks(fontsize=14)
+    # plt.legend(Type,fontsize=16)
+    A=np.array([10**-2,10**0])
+    B=np.array([10**-4,10**-2])
+    plt.loglog(A,B,'--m')
+    B=np.array([10**-9,10**-5])
+    plt.loglog(A,B,'--y')
+    plt.legend(LG1,fontsize=16)
+    
     plt.figure(2)
-    plt.loglog(H,Linfnorm[i,:],'-o')
-
-plt.figure(1)
-plt.xlabel('Log(Element size=h)',fontsize=16)
-plt.ylabel('Log($L_{2}$ norm of Error)', fontsize=16)
-plt.title('$L_{2}$ Norm Error vs Element size', fontsize=18)
-plt.xticks(fontsize=14)
-plt.yticks(fontsize=14)
-plt.legend(Type,fontsize=16)
-
-plt.figure(2)
-plt.xlabel('Log(Element size=h)',fontsize=16)
-plt.ylabel('Log($L_{\infty}$ norm of Error)', fontsize=16)
-plt.title('$L_{\infty}$ Norm Error vs Element size', fontsize=18)
-plt.xticks(fontsize=14)
-plt.yticks(fontsize=14)
-plt.legend(Type,fontsize=16)
-
-plt.show()
+    plt.xlabel('Log(Element size=h)',fontsize=16)
+    plt.ylabel('Log($L_{\infty}$ norm of Error)', fontsize=16)
+    plt.title('$L_{\infty}$ Norm Error vs Element size', fontsize=18)
+    plt.xticks(fontsize=14)
+    plt.yticks(fontsize=14)
+    # plt.legend(Type,fontsize=16)
+    A=np.array([10**-2,10**0])
+    B=np.array([10**-7,10**-2])
+    plt.loglog(A,B,'--m')
+    B=np.array([10**-10,10**-4])
+    plt.loglog(A,B,'--y')
+    plt.legend(LG2,fontsize=16)
     
+    plt.show()
+        
+    L = np.log(Linfnorm)
+    h = np.log(H)
+    a=0
+    b=4
+    print('slope Linf=',(L[:,b]-L[:,a])/(h[b]-h[a]))
     
+    L = np.log(L2norm)
+    
+    print('slope L2=',(L[:,b]-L[:,a])/(h[b]-h[a]))
+
+def ResultPlotFun(example):
+    h = 1/2**7
+    L = 1 
+    H = 1
+    
+    mesh = {'h':h,'L':L,'H':H}
+    
+    Type = ['P1','P2','Q1','Q2']
+        
+    num = len(Type)
+      
+    for i in range(num):
+        ElementType = Type[i]
+        F = FEA(mesh,ElementType)
+        _,_,_= F.SolveFEA(example,Plot_it=True)
+        
+#%%
+example=1
+# TestFunction(example,['P1','Q1'])
+# TestFunction(example,['Q1','Q2'])
+# TestFunction(example,['P1','P2','Q1','Q2'])
+
+ResultPlotFun(example)
