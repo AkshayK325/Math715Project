@@ -41,8 +41,7 @@ class FEA:
         self.iK = tuple(np.kron(self.dofMat,np.ones((self.mesh['dofPerElem'],1))).flatten().astype(int))
          
         self.jK = tuple(np.kron(self.dofMat,np.ones((1,self.mesh['dofPerElem']))).flatten().astype(int))
-       
-     
+            
     def SolveFEA(self,example,Plot_it):
         
         def ElemStiffnessMatrix1(h,ElemDof):
@@ -300,26 +299,51 @@ class FEA:
             uref = sin(self.p[:,0]*pi)*sin(self.p[:,1]*pi)/(2*pi**2)
                   
         if Plot_it:
-            self.Plot_Solution(u,'Element ' + self.ElementType + ' FEA Solution for Elements ' )
-            self.Plot_Solution(b,'Exact Solution for Elements ')
+            self.Plot_Solution(u,'Element ' + self.ElementType + ' FEA Solution for Elements ' ,1)
+            self.Plot_Solution(uref,'Exact Solution',0)
+            # self.Plot_Mesh()
                
         normL2  = norm((uref[freeNodes]-u[freeNodes]),ord=2)
         normLinf = norm(abs((uref[freeNodes]-u[freeNodes])),ord=np.inf)
                 
         return u,normL2,normLinf
         
-    def Plot_Solution(self,u,TitleStr):
+    def Plot_Solution(self,u,TitleStr,nn):
         Ny = int(np.sqrt(np.size(self.p,0)))
         fig = plt.figure()
         ax = fig.add_subplot(111,projection='3d')
-        ax.plot_surface(self.p[:,0].reshape((-1,Ny)),self.p[:,1].reshape((-1,Ny)),u.reshape((-1,Ny)),cmap=plt.cm.viridis)
-        plt.xlabel("x ax1s")
-        plt.ylabel("y ax1s",rotation = "vertical",labelpad = 20)
+        surf = ax.plot_surface(self.p[:,0].reshape((-1,Ny)),self.p[:,1].reshape((-1,Ny)),u.reshape((-1,Ny)),cmap=plt.cm.viridis)
+        fig.colorbar(surf)
+        plt.xlabel("x axis")
+        plt.ylabel("y axis",rotation = "vertical",labelpad = 20)
+
         plt.title(TitleStr + str(np.size(self.dofMat,0)))
+        if nn==0:
+            plt.title(TitleStr)
         plt.ylim((np.min(self.p[:]),np.max(self.p[:])))
         plt.xlim((np.min(self.p[:]),np.max(self.p[:])))    
         plt.show()
         
+    def Plot_Mesh(self):
+        
+        X = self.p[self.dofMat,0]
+        Y = self.p[self.dofMat,1]
+                
+        fig, ax = plt.subplots(1,1)
+        for i in range(np.size(X,0)):
+            if self.ElementType == 'P1' or self.ElementType == 'P2' :
+                ax.fill(X[i,0:3], Y[i,0:3], facecolor='b', edgecolor='k')
+            else:
+                ax.fill(X[i,0:4], Y[i,0:4], facecolor='b', edgecolor='k')
+                
+        ax.set_aspect('equal', 'box')
+        plt.xlabel("x")
+        plt.ylabel("y",rotation = "horizontal",labelpad = 20)
+        plt.title('Mesh Plot of ' + self.ElementType)
+        
+        plt.plot(self.p[:,0],self.p[:,1],'om')
+        
+        plt.show()
     
 
 def TestFunction(example,Type):
@@ -342,7 +366,7 @@ def TestFunction(example,Type):
     Linfnorm = np.zeros((num,np.size(H)))
     for i in range(num):
         ElementType = Type[i]
-        print(i)
+        print(Type[i])
         for j in range(np.size(H)):
             mesh['h'] = H[j]
             F = FEA(mesh,ElementType)
@@ -404,8 +428,8 @@ def TestFunction(example,Type):
     
     print('slope L2=',(L[:,b]-L[:,a])/(h[b]-h[a]))
 
-def ResultPlotFun(example):
-    h = 1/2**7
+def ResultPlotFun(example,N):
+    h = 1/2**N
     L = 1 
     H = 1
     
@@ -424,6 +448,7 @@ def ResultPlotFun(example):
 example=1
 # TestFunction(example,['P1','Q1'])
 # TestFunction(example,['Q1','Q2'])
-# TestFunction(example,['P1','P2','Q1','Q2'])
+TestFunction(example,['P1','P2','Q1','Q2'])
 
-ResultPlotFun(example)
+N = 8
+# ResultPlotFun(example,N)
